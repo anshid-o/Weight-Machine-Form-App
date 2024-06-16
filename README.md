@@ -7,4 +7,4 @@ A Windows Forms application that monitors a source text file for changes, displa
 <li>Hotkey Functionality: Press Ctrl+Q to input the last line of the source file into any active application at the current cursor position.</li>
 <li>Editable RichTextBox: The RichTextBox displaying the file content is editable and selectable.</li>
 <br><br><br><br><br>
-![image](https://github.com/anshid-o/Weight-Machine-Form-App/assets/93657923/43c819f0-3e34-4e6e-b4f8-42a14d52dbd6)
+<img src="https://github.com/anshid-o/Weight-Machine-Form-App/assets/93657923/43c819f0-3e34-4e6e-b4f8-42a14d52dbd6">
