@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.IO;
+using System.IO.Ports;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -8,12 +9,10 @@ namespace WeightGetter
 {
     public partial class myForm : Form
     {
-        private string sourceFileName = @"C:\Users\91964\OneDrive\Desktop\sendData.txt"; // Update with your source file path
         private string lastLine = string.Empty;
-        private FileSystemWatcher fileWatcher;
-        private long lastPosition = 0;
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_ID = 9000;
+        private SerialPort serialPort1;
 
         [DllImport("Gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
         private static extern IntPtr CreateRoundRectRgn
@@ -26,16 +25,32 @@ namespace WeightGetter
             int nHeightEllipse // height of ellipse
         );
 
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr ProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
         public Point mouseLocation;
+
         public myForm()
         {
             InitializeComponent();
+
             this.FormBorderStyle = FormBorderStyle.None;
             Region = System.Drawing.Region.FromHrgn(CreateRoundRectRgn(0, 0, Width, Height, 20, 20));
             InitializeRichTextBox();
-            LoadInitialData();
             RegisterHotKey(Handle, HOTKEY_ID, MOD_CONTROL, (int)Keys.Q);
-            StartFileWatcher();
+            InitializeSerialPort();
         }
 
         private void InitializeRichTextBox()
@@ -49,91 +64,166 @@ namespace WeightGetter
             richTextBox1.Margin = new Padding(10); // Padding for the RichTextBox
         }
 
-        private void LoadInitialData()
+        private void InitializeSerialPort()
         {
-            try
+            serialPort1 = new SerialPort
             {
-                string[] lines = File.ReadAllLines(sourceFileName);
-                richTextBox1.Lines = lines;
-                lastLine = lines.Length > 0 ? lines[lines.Length - 1] : string.Empty;
-
-                // Set lastPosition to the length of the file
-                lastPosition = new FileInfo(sourceFileName).Length;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error loading data: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void StartFileWatcher()
-        {
-            fileWatcher = new FileSystemWatcher(Path.GetDirectoryName(sourceFileName))
-            {
-                Filter = Path.GetFileName(sourceFileName),
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size
+                PortName = "COM3", // Update to your actual serial port name
+                BaudRate = 9600,   // Update to match your weight machine
+                Parity = Parity.None,
+                DataBits = 8,
+                StopBits = StopBits.One,
+                Handshake = Handshake.None,
+                ReadTimeout = 500,
+                WriteTimeout = 500
             };
-            fileWatcher.Changed += OnFileChanged;
-            fileWatcher.EnableRaisingEvents = true;
-        }
 
-        private void OnFileChanged(object sender, FileSystemEventArgs e)
-        {
             try
             {
-                // Introduce a delay to allow the file write operation to complete
-                System.Threading.Thread.Sleep(100);
-
-                using (FileStream fs = new FileStream(sourceFileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (StreamReader sr = new StreamReader(fs))
+                // Check if the port is already open and close it before opening again
+                if (serialPort1.IsOpen)
                 {
-                    // Move the stream position to the last read position
-                    fs.Seek(lastPosition, SeekOrigin.Begin);
+                    serialPort1.Close();
+                }
 
-                    // Read new lines from the last position
-                    string newLine;
-                    bool isFirstLine = true;
-                    while ((newLine = sr.ReadLine()) != null)
-                    {
-                        lastLine = newLine;
+                serialPort1.Open();
 
-                        // Append the new line to the RichTextBox
-                        richTextBox1.Invoke((MethodInvoker)(() =>
-                        {
-                            if (!isFirstLine)
-                            {
-                                richTextBox1.AppendText(Environment.NewLine);
-                            }
-                            richTextBox1.AppendText(lastLine);
-                            isFirstLine = false;
-                        }));
-                    }
-
-                    // Update the last read position
-                    lastPosition = fs.Position;
+                if (serialPort1.IsOpen)
+                {
+                    richTextBox1.AppendText("Connection Successful!" + Environment.NewLine);
                 }
             }
-            catch (IOException ioEx)
+            catch (UnauthorizedAccessException)
             {
-                Console.WriteLine($"IOException in OnFileChanged: {ioEx}");
+                richTextBox1.AppendText("Access to the port is denied." + Environment.NewLine);
+                try
+                {
+                    serialPort1.Open();
+                    if (serialPort1.IsOpen)
+                    {
+                        richTextBox1.AppendText("Connection Successful!" + Environment.NewLine);
+                    }
+                    else
+                    {
+                        richTextBox1.AppendText("Connection Unsuccessful!" + Environment.NewLine);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    richTextBox1.AppendText($"Connection failed: {ex.Message}" + Environment.NewLine);
+                }
+
+
+            }
+            catch (IOException)
+            {
+                richTextBox1.AppendText("The port is in an invalid state. Make sure the device is connected and not in use by another application." + Environment.NewLine);
+            }
+            catch (ArgumentException)
+            {
+                richTextBox1.AppendText("The port name does not begin with 'COM' or is not valid." + Environment.NewLine);
+            }
+            catch (InvalidOperationException)
+            {
+                richTextBox1.AppendText("The specified port is already open." + Environment.NewLine);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Exception in OnFileChanged: {ex}");
+                richTextBox1.AppendText($"Connection failed: {ex.Message}" + Environment.NewLine);
+            }
+
+            serialPort1.DataReceived += new SerialDataReceivedEventHandler(SerialPort1_DataReceived);
+        }
+
+        private void SerialPort1_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            try
+            {
+                string rawData = serialPort1.ReadLine(); // Adjust according to your weight machine's data format
+                string parsedData = ParseWeightData(rawData);
+
+                Invoke(new Action(() =>
+                {
+                    richTextBox1.AppendText(parsedData + Environment.NewLine); // Update the RichTextBox with the received data
+                    lastLine = parsedData; // Update lastLine with the latest received data
+                }));
+            }
+            catch (Exception ex)
+            {
+                Invoke(new Action(() =>
+                {
+                    richTextBox1.AppendText($"Error reading serial port: {ex.Message}" + Environment.NewLine);
+                }));
+            }
+        }
+
+        private string ParseWeightData(string rawData)
+        {
+            // Remove the leading '+' character
+            if (rawData.StartsWith("+"))
+            {
+                rawData = rawData.Substring(1);
+            }
+
+            // Remove leading zeros
+            rawData = rawData.TrimStart('0');
+
+            // Remove the last four characters, assuming they are " G U"
+            if (rawData.Length >= 4)
+            {
+                rawData = rawData.Substring(0, rawData.Length - 4);
+            }
+
+            // Remove any remaining trailing spaces
+            rawData = rawData.Trim();
+
+            return rawData;
+        }
+
+        private void richTextBox1_TextChanged(object sender, EventArgs e)
+        {
+            for (int i = richTextBox1.Lines.Length - 1; i >= 0; i--)
+            {
+                if (!string.IsNullOrWhiteSpace(richTextBox1.Lines[i]))
+                {
+                    lastLine = richTextBox1.Lines[i];
+                    break;
+                }
             }
         }
 
         protected override void WndProc(ref Message m)
         {
             base.WndProc(ref m);
+
             if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             {
+                IntPtr hForegroundWindow = GetForegroundWindow();
+                uint dwThreadId = GetWindowThreadProcessId(hForegroundWindow, IntPtr.Zero);
+                uint dwThisThreadId = GetCurrentThreadId();
+
+                if (AttachThreadInput(dwThisThreadId, dwThreadId, true))
+                {
+                    SetForegroundWindow(hForegroundWindow);
+                    AttachThreadInput(dwThisThreadId, dwThreadId, false);
+                }
+
                 SendTextToActiveWindow(lastLine);
             }
         }
 
         private void SendTextToActiveWindow(string text)
         {
+            IntPtr hForegroundWindow = GetForegroundWindow();
+            uint dwThreadId = GetWindowThreadProcessId(hForegroundWindow, IntPtr.Zero);
+            uint dwThisThreadId = GetCurrentThreadId();
+
+            if (AttachThreadInput(dwThisThreadId, dwThreadId, true))
+            {
+                SetForegroundWindow(hForegroundWindow);
+                AttachThreadInput(dwThisThreadId, dwThreadId, false);
+            }
+            System.Threading.Thread.Sleep(500);
             foreach (char c in text)
             {
                 SendKey(c);
@@ -190,8 +280,6 @@ namespace WeightGetter
             public MOUSEINPUT mi;
             [FieldOffset(0)]
             public KEYBDINPUT ki;
-            [FieldOffset(0)]
-            public HARDWAREINPUT hi;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -215,18 +303,13 @@ namespace WeightGetter
             public IntPtr dwExtraInfo;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct HARDWAREINPUT
-        {
-            public int uMsg;
-            public short wParamL;
-            public short wParamH;
-        }
-
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             UnregisterHotKey(Handle, HOTKEY_ID);
-            fileWatcher.Dispose();
+            if (serialPort1.IsOpen)
+            {
+                serialPort1.Close();
+            }
         }
 
         private void mouseDown(object sender, MouseEventArgs e)
@@ -254,49 +337,10 @@ namespace WeightGetter
             WindowState = FormWindowState.Minimized;
         }
 
-        private void Form1_Load(object sender, EventArgs e)
-        {
-
-        }
-
-        private void richTextBox1_TextChanged(object sender, EventArgs e)
-        {
-
-        }
-
-        private void label2_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void panel1_Paint(object sender, PaintEventArgs e)
-        {
-
-        }
-
-        private void panel2_Paint(object sender, PaintEventArgs e)
-        {
-
-        }
-
-        private void label1_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void pictureBox2_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void pictureBox1_Click(object sender, EventArgs e)
-        {
-
-        }
-
         private void reset_richTextBox(object sender, MouseEventArgs e)
         {
             richTextBox1.Clear();
         }
+
     }
 }
